@@ -132,10 +132,10 @@ void printHelp() {
 	          << "Program mode:\n" 
 	          << "- filename\n"
 	          << "- filename debug_flag(+)\n"
-	          << "- Nx Ny K1 K2\n"
-	          << "- Nx Ny K1 K2 debug_flag(+)\n"
-	          << "File with name filename must contain parameters Nx Ny K1 K2.\n"
-	          << "Nx, Ny, K1, K2 have integer type. 1 <= Nx * Ny <= 10^7.\n";
+	          << "- Nx Ny K1 K2 T\n"
+	          << "- Nx Ny K1 K2 T debug_flag(+)\n"
+	          << "File with name filename must contain parameters Nx Ny K1 K2 T debug_flag.\n"
+	          << "Nx, Ny, K1, K2, T have integer type. 1 <= Nx * Ny <= 10^7.\n";
 }
 
 int main(int argc, char* argv[]) {
