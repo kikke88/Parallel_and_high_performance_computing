@@ -27,10 +27,11 @@ void SpMVKernel(const std::vector<double>& matrix, const std::vector<int>& row_p
 	            const std::vector<int>& col_ptr, const std::vector<double>& vec,
 	            std::vector<double>& res) {
 	for (int i = 0; i < static_cast<int>(res.size()); ++i) {
+		double sum = 0;
 		for (int j = row_ptr[i]; j < row_ptr[i + 1]; ++j) {
-			int cur_idx = col_ptr[j];
-			res[i] += matrix[j] * vec[cur_idx];
+			sum += matrix[j] * vec[col_ptr[j]];
 		}
+		res[i] = sum;
 	}
 	return;
 }
@@ -98,11 +99,11 @@ void fill(const int Nx, const int Ny,
 			double sum = 0;
 			int diag_idx;
 			for (int k = row_ptr[cur_idx]; k < row_ptr[cur_idx + 1]; ++k) {
-				const int neid_idx = col_ptr[k];
-				if (neid_idx == cur_idx) {
+				const int neib_idx = col_ptr[k];
+				if (neib_idx == cur_idx) {
 					diag_idx = k;
 				} else {
-					A_arr[k] = std::cos(static_cast<double>(cur_idx) * neid_idx + cur_idx + neid_idx);
+					A_arr[k] = std::cos(static_cast<double>(cur_idx) * neib_idx + cur_idx + neib_idx);
 					sum += std::abs(A_arr[k]);
 				}
 			}
@@ -110,6 +111,70 @@ void fill(const int Nx, const int Ny,
 			b_vec[cur_idx] = std::sin(cur_idx);
 		}
 	}
+	return;
+}
+
+void Solve(const std::vector<double>& A_arr, const std::vector<double>& b_vec,
+	       const std::vector<int>& row_ptr, const std::vector<int>& col_ptr,
+	       std::vector<double>& x_vec, const double TOL = 1e-4) {
+	const size_t vec_size = b_vec.size();
+	std::vector<double> p_vec(vec_size), z_vec(vec_size), q_vec(vec_size), r_vec(b_vec);
+	bool do_cycle = true;
+	int it_num = 1;
+	const int MAX_IT_NUM = 100;
+	std::vector<double> inverse_M(vec_size);
+	std::vector<int> M_row_ptr(vec_size + 1), M_col_ptr(vec_size);
+//#pragma omp parallel for
+	for (int i = 0; i < static_cast<int>(vec_size); ++i) {
+		int diag_idx;
+		for (int k = row_ptr[i]; k < row_ptr[i + 1]; ++k) {
+			if (col_ptr[k] == i) {
+				diag_idx = k;
+				break;
+			}
+		}
+		inverse_M[i] = 1. / A_arr[diag_idx];
+		M_row_ptr[i] = i;
+		M_col_ptr[i] = i;
+	}
+	M_row_ptr[vec_size] = static_cast<int>(vec_size);
+	double dot_time = 0., axpby_time = 0., spmv_time = 0.;
+	double alpha, ro_prev, ro_cur, beta;
+	do {
+		spmv_time -= omp_get_wtime();
+		SpMVKernel(inverse_M, M_row_ptr, M_col_ptr, r_vec, z_vec);
+		spmv_time += omp_get_wtime();
+		
+		dot_time -= omp_get_wtime();
+		ro_cur = dotKernel(r_vec, z_vec);
+		dot_time += omp_get_wtime();
+		if (it_num == 1) {
+			p_vec = z_vec; // мб распараллелить
+		} else {
+			beta = ro_cur / ro_prev;
+			axpby_time -= omp_get_wtime();
+			axpbyKernel(beta, p_vec, 1., z_vec);
+			axpby_time += omp_get_wtime();
+		}
+		spmv_time -= omp_get_wtime();
+		SpMVKernel(A_arr, row_ptr, col_ptr, p_vec, q_vec);
+		spmv_time += omp_get_wtime();
+		dot_time -= omp_get_wtime();
+		alpha = ro_cur / dotKernel(p_vec, q_vec);
+		dot_time += omp_get_wtime();
+		axpby_time -= omp_get_wtime();
+		axpbyKernel(1., x_vec,  alpha, p_vec);
+		axpbyKernel(1., r_vec, -alpha, q_vec);
+		axpby_time += omp_get_wtime();
+		std::cout << it_num << " , " << ro_cur << '\n';
+		if (ro_cur < TOL or it_num >= MAX_IT_NUM) {
+			do_cycle = false;
+		} else {	
+			++it_num;
+			ro_prev = ro_cur;
+		}
+	} while (do_cycle);
+	std::cout << dot_time << ' ' << axpby_time << ' ' << spmv_time << '\n';
 	return;
 }
 
@@ -156,6 +221,11 @@ int main(int argc, char* argv[]) {
 		printHelp();
 		return 1;
 	}
+	if (Nx <= 0 or Ny <= 0 or K1 <= 0 or K2 <= 0 or (static_cast<long long>(Nx) * Ny >= 1'000'000'000)) {
+		std::cout << "Bad parameter values" << '\n';
+		printHelp();
+		return 1;
+	}
 	bool debug_flag = false;
 	if (argc == 3 or argc == 6) {
 		debug_flag = true;
@@ -167,15 +237,15 @@ int main(int argc, char* argv[]) {
 	    (Nx * Ny) / (K1 + K2) * K2 + std::max((Nx * Ny) % (K1 + K2) - K1, 0)) + // oblique
         (Nx + 1) * (Ny + 1);                                                    // with itself
 
+    double time = -omp_get_wtime();
 	std::vector<int> row_ptr(sz_row_ptr);
 	std::vector<int> col_ptr(sz_col_ptr);
-	double time = -omp_get_wtime();
 	generate(Nx, Ny, K1, K2, row_ptr, col_ptr);
 	time += omp_get_wtime();
 	std::cout << "Generation (sequential) completed.\nTime - " << time << '\n';
 	if (debug_flag) {
 		std::ofstream oFile ("seq_IA_JA.txt");
-		for (int i = 0; i < row_ptr.size() - 1; ++i) {
+		for (int i = 0; i < static_cast<int>(row_ptr.size() - 1); ++i) {
 			oFile << i << " - ";
 			for (int j = row_ptr[i]; j < row_ptr[i + 1]; ++j) {
 				oFile << col_ptr[j] << ' ';
@@ -184,15 +254,15 @@ int main(int argc, char* argv[]) {
 		}
 	}
 	
+	time = -omp_get_wtime();
 	std::vector<double> A_arr(sz_col_ptr);
 	std::vector<double> b_vec(sz_row_ptr - 1);
-	time = -omp_get_wtime();
 	fill(Nx, Ny, row_ptr, col_ptr, A_arr, b_vec);
 	time += omp_get_wtime();
 	std::cout << "Filling (sequential) completed.\nTime - " << time << '\n';
 	if (debug_flag) {
 		std::ofstream oFile ("seq_A_b.txt");
-		for (int i = 0; i < row_ptr.size() - 1; ++i) {
+		for (int i = 0; i < static_cast<int>(row_ptr.size() - 1); ++i) {
 			oFile << i << " - ";
 			for (int j = row_ptr[i]; j < row_ptr[i + 1]; ++j) {
 				oFile << A_arr[j] << ' ';
@@ -201,7 +271,7 @@ int main(int argc, char* argv[]) {
 			oFile << '\n';
 		}
 	}
-
+/*
 	// kernels test
 	size_t vec_size = b_vec.size();
 	std::vector<double> a(vec_size, 1.), b(vec_size, 2);
@@ -213,8 +283,7 @@ int main(int argc, char* argv[]) {
 	// for (int i = 0; i < a.size(); ++i) {
 	// 	a[i] = i;
 	// }
-	std::cout << '\n';
-	std::vector<double> res(vec_size 0);
+	std::vector<double> res(vec_size, 0);
 	SpMVKernel(A_arr, row_ptr, col_ptr, a, res);
 	std::cout << "SpMV: sum - " << std::accumulate(res.cbegin(), res.cend(), 0.)
 	          << " | l2_norm - " << std::sqrt(dotKernel(res, res)) << '\n';
@@ -222,35 +291,20 @@ int main(int argc, char* argv[]) {
 	// 	std::cout << res[i] << ' ';//a[i] = i;
 	// }
 	// std::cout << '\n';
+*/
 
-	
-	std::vector<double> x_vec(vec_size, 0), p_vec(vec_size),
-	                    z_vec(vec_size), q_vec(vec_size),
-	                    r_vec(b);
-	
-	return 0;
-}
-
-// посчитать матрицу М^-1
-void Solve(const std::vector<double>& A_arr, const std::vector<int>& row_ptr, const std::vector<int>& col_ptr,
-	       std::vector<double>& x_vec, std::vector<double>& p_vec, std::vector<double>& z_vec,
-	       std::vector<double>& q_vec, std::vector<double>& r_vec, const double EPS = 1e-5,
-	       std::vector<double>) {
-	double alpha, ro_prev, ro_cur = 1, beta;
-	for (int k = 1; ro_cur >= EPS; ++k) {
-		z_vec = dotKernel(M_arr, r_vec);
-		ro_prev = ro_cur;
-		ro_cur = dotKernel(r_vec, z_vec);
-		if (k == 1) {
-			p_vec = std::move(z_vec);
-		} else {
-			beta = ro_cur / ro_prev;
-			axpbyKernel(beta, p_vec, 1., z_vec);
+	time = -omp_get_wtime();
+	std::vector<double> x_vec(b_vec.size(), 0);
+	Solve(A_arr, b_vec, row_ptr, col_ptr, x_vec);
+	time += omp_get_wtime();
+	std::cout << "Solve (sequential) completed.\nTime - " << time << '\n';
+	if (debug_flag) {
+		std::ofstream oFile ("seq_X.txt");
+		for (int i = 0; i < static_cast<int>(x_vec.size()); ++i) {
+			oFile << x_vec[i] << ' ';
 		}
-		SpMVKernel(A_arr, row_ptr, col_ptr, p_vec, q_vec);
-		alpha = ro_cur / dot(p_vec, q_vec);
-		axpbyKernel(1, x_vec, alpha, p_vec);
-		axpbyKernel(1, r_vec, alpha, q_vec);
+		oFile << '\n';
 	}
+	
 	return 0;
 }

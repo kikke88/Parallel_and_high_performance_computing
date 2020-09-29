@@ -105,7 +105,7 @@ void generate(const int Nx, const int Ny, const int K1, const int K2,
 void fill(const int Nx, const int Ny,
 	     const std::vector<int>& row_ptr, const std::vector<int>& col_ptr,
 	     std::vector<double>& A_arr, std::vector<double>& b_vec) {
-#pragma omp parallel for
+#pragma omp parallel for // попробовать другой способ распараллеливания
 	for (int i = 0; i < (Ny + 1); ++i) {
 		for (int j = 0; j < (Nx + 1); ++j) {
 			const int cur_idx = (Nx + 1) * i + j;
@@ -171,6 +171,11 @@ int main(int argc, char* argv[]) {
 		printHelp();
 		return 1;
 	}
+	if (Nx <= 0 or Ny <= 0 or K1 <= 0 or K2 <= 0 or Nx * Ny >= 1e9) {
+		std::cout << "Bad parameter values" << '\n';
+		printHelp();
+		return 1;
+	}
 	bool debug_flag = false;
 	if (argc == 3 or argc == 7) {
 		debug_flag = true;
@@ -222,3 +227,21 @@ int main(int argc, char* argv[]) {
 	}
 	return 0;
 }
+
+
+	// for (int i = 0; i < (Ny + 1); ++i) {
+	// 	for (int j = 0; j < (Nx + 1); ++j) {
+	// 		const int cur_idx = (Nx + 1) * i + j;
+	// 		int diag_idx;
+	// 		for (int k = row_ptr[cur_idx]; k < row_ptr[cur_idx + 1]; ++k) {
+	// 			const int neib_idx = col_ptr[k];
+	// 			if (neib_idx == cur_idx) {
+	// 				diag_idx = k;
+	// 				break;
+	// 			}
+	// 		}
+	// 		inverse_M[cur_idx] = 1. / A_arr[diag_idx];
+	// 		M_row_ptr[i] = cur_idx;
+	// 		M_col_ptr[i] = cur_idx;
+	// 	}
+	// }
