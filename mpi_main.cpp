@@ -9,8 +9,6 @@
 #include <iterator>
 #include <set>
 
-
-//#include <omp.h>
 #include <mpi.h>
 
 double dotKernel(const int N_own,
@@ -29,7 +27,7 @@ void axpbyKernel(const double a, std::vector<double>& x,
 	             const double b, const std::vector<double>& y) {
 	std::transform(x.cbegin(), x.cend(),
 	               y.cbegin(), x.begin(),
-	               [a, b](const double x_i, const double y_i) {
+	               [a, b] (const double x_i, const double y_i) {
 	                   return a * x_i + b * y_i;
 	                }
 	);
@@ -42,46 +40,28 @@ struct Com_struct {
 	std::vector<int> send, recv;
 };
 
-void update(std::vector<double>& vec, const Com_struct& com) {
-	const int num_of_neib_proc = static_cast<int>(com.neighbours.size());
+void update(std::vector<double>& vec, const Com_struct& com, const std::vector<std::vector<MPI_Datatype>>& types) {
+	static const int num_of_neib_proc = static_cast<int>(com.neighbours.size());
 	static std::vector<MPI_Status> status_vec(2 * num_of_neib_proc);
 	static std::vector<MPI_Request> request_vec(2 * num_of_neib_proc, MPI_REQUEST_NULL);
-	static std::vector<double> send_buf(com.send_offset.back()),
-	                           recv_buf(com.recv_offset.back());
 
 	for (int p = 0; p < num_of_neib_proc; ++p) {
-		int message_size = com.recv_offset[p + 1] - com.recv_offset[p];
 		int neib_idx = com.neighbours[p];
-		MPI_Irecv(recv_buf.data() + com.recv_offset[p], message_size, MPI_DOUBLE, neib_idx,
+		MPI_Irecv(vec.data(), 1, types[p][1], neib_idx,
 		          0, MPI_COMM_WORLD, request_vec.data() + p);
-	}
-
-//omp
-	for (int i = 0; i < com.send_offset.back(); ++i) {
-		send_buf[i] = vec[com.send[i]];
-	}
-
-	for (int p = 0; p < num_of_neib_proc; ++p) {
-		int message_size = com.send_offset[p + 1] - com.send_offset[p];
-		int neib_idx = com.neighbours[p];
-		MPI_Isend(send_buf.data() + com.send_offset[p], message_size, MPI_DOUBLE, neib_idx,
+		MPI_Isend(vec.data(), 1, types[p][0], neib_idx,
 		          0, MPI_COMM_WORLD, request_vec.data() + p + num_of_neib_proc);
 	}
 
 	MPI_Waitall(num_of_neib_proc, request_vec.data(), status_vec.data());
-
-//omp
-	for (int i = 0; i < com.recv_offset.back(); ++i) {
-		vec[com.recv[i]] = recv_buf[i];
-	}
-	//MPI_Abort(MPI_COMM_WORLD, -1);
 }
 
 void SpMVKernel(const int N_own,
                 const std::vector<double>& matrix, const std::vector<int>& row_ptr,
                 const std::vector<int>& col_ptr, std::vector<double>& vec,
-                const Com_struct& com, std::vector<double>& res) {
-	update(vec, com);
+                const Com_struct& com, const std::vector<std::vector<MPI_Datatype>>& types,
+                std::vector<double>& res) {
+	update(vec, com, types);
 	for (int i = 0; i < N_own; ++i) {
 		double sum = 0;
 		for (int j = row_ptr[i]; j < row_ptr[i + 1]; ++j) {
@@ -89,13 +69,8 @@ void SpMVKernel(const int N_own,
 		}
 		res[i] = sum;
 	}
-	//MPI_Abort(MPI_COMM_WORLD, -1);
 	return;
 }
-
-// int obliquesBefore(const int K1, const int K2, const int cell_idx) {
-// 	return cell_idx / (K1 + K2) * K2 + std::max(cell_idx % (K1 + K2) - K1, 0);
-// }
 
 bool hasOblique(const int K1, const int K2, const int cell_idx) {
 	return cell_idx / (K1 + K2) * (K1 + K2) + K1 <= cell_idx;
@@ -115,15 +90,6 @@ void get_local_begin_end(const int N, const int p, const int idx, int& b, int& e
 		e += N % p;
 	}
 }
-
-	// for (int i = 0; i < ize; ++i) {
-	// 	MPI_Barrier(MPI_COMM_WORLD);
-	// 	if (rank == i) {
-	// 		std::cout << Pi << ' ' << Pj << '\n';
-	// 		std::cout << rank << ' ' << ib << ' ' << ie << ' ' << jb << ' ' << je << '\n';
-	// 	}
-	// 	MPI_Barrier(MPI_COMM_WORLD);
-	// }
 
 void generate(const int Nx, const int Ny,
 	          const int K1, const int K2,
@@ -235,17 +201,6 @@ void generate(const int Nx, const int Ny,
 			row_ptr.push_back(row_ptr.back() + neib_num);
 		}
 	}
-	// for (int i = 0; i < size; ++i) {
-	// 	MPI_Barrier(MPI_COMM_WORLD);
-	// 	if (rank == i) {
-	// 		std::cout << rank << '\n';
-	// 		for (int elem: L2G) {
-	// 			std::cout << elem << ' ';
-	// 		}
-	// 		std::cout << '\n';
-	// 	}
-	// 	MPI_Barrier(MPI_COMM_WORLD);
-	// }
 }
 
 void fill(const int N, const int N_own,
@@ -295,13 +250,11 @@ void Com(const int rank, const int size,
 			const int col_idx = col_ptr[k];
 			const int proc_rank = Part[col_idx];
 			if (proc_rank != rank) {
-				//std::cout << k << ' ' << col_idx << '\n';
 				send_to_process[proc_rank].insert(row_idx);
 				recv_from_process[proc_rank].insert(col_idx);
 			}
 		}
 	}
-
 	for (int neib_idx = 0; neib_idx < size; ++neib_idx) {
 		if (not send_to_process[neib_idx].empty()) {
 			com.neighbours.push_back(neib_idx);
@@ -320,8 +273,9 @@ void Com(const int rank, const int size,
 void Solve(const int N, const int N_own, const int rank,
 	       const std::vector<double>& A_arr, const std::vector<double>& b_vec,
 	       const std::vector<int>& row_ptr, const std::vector<int>& col_ptr,
-	       const Com_struct& com, std::vector<double>& x_vec, const double TOL = 1e-7) {
-	//const size_t vec_size = b_vec.size();
+	       const Com_struct& com, const std::vector<std::vector<MPI_Datatype>>& types,
+	       std::vector<double>& x_vec, const double TOL = 1e-7) {
+	       
 	std::vector<double> p_vec(N), z_vec(N),
 	                    q_vec(N), r_vec(b_vec),
 	                    inverse_M;
@@ -349,7 +303,7 @@ void Solve(const int N, const int N_own, const int rank,
 	double alpha, rho_prev, rho_cur, beta, residual_norm;
 	do {
 		spmv_time -= MPI_Wtime();
-		SpMVKernel(N_own, inverse_M, M_row_ptr, M_col_ptr, r_vec, com, z_vec);
+		SpMVKernel(N_own, inverse_M, M_row_ptr, M_col_ptr, r_vec, com, types, z_vec);
 		spmv_time += MPI_Wtime();
 		dot_time -= MPI_Wtime();
 		rho_cur = dotKernel(N_own, r_vec, z_vec);
@@ -363,7 +317,7 @@ void Solve(const int N, const int N_own, const int rank,
 			axpby_time += MPI_Wtime();
 		}
 		spmv_time -= MPI_Wtime();
-		SpMVKernel(N_own, A_arr, row_ptr, col_ptr, p_vec, com, q_vec);
+		SpMVKernel(N_own, A_arr, row_ptr, col_ptr, p_vec, com, types, q_vec);
 		spmv_time += MPI_Wtime();
 		dot_time -= MPI_Wtime();
 		alpha = rho_cur / dotKernel(N_own, p_vec, q_vec);
@@ -375,9 +329,13 @@ void Solve(const int N, const int N_own, const int rank,
 		dot_time -= MPI_Wtime();
 		residual_norm = dotKernel(N_own, r_vec, r_vec);
 		dot_time += MPI_Wtime();
+/*
 		if (rank == 0) {
-			std::cout << "It - " << it_num << ", RES_NORM - " << residual_norm << ", tol - " << residual_norm / b_norm << '\n';
+			std::cout << "It - " << it_num <<
+			             ", RES_NORM - " << residual_norm <<
+			             ", tol - " << residual_norm / b_norm << '\n';
 		}
+*/
 		if (residual_norm < EPS or it_num >= MAX_IT_NUM) {
 			do_cycle = false;
 		} else {	
@@ -403,16 +361,29 @@ void printHelp() {
 	std::cout << "Incorrect input.\n"
 	          << "Program mode:\n" 
 	          << "- filename\n"
-	          << "- filename debug_flag(+)\n"
 	          << "- Nx Ny K1 K2 Px Py\n"
-	          << "- Nx Ny K1 K2 Px Py debug_flag(+)\n"
-	          << "File with name filename must contain parameters Nx Ny K1 K2.\n"
+	          << "File with name filename must contain parameters Nx Ny K1 K2 Px Py.\n"
 	          << "Nx, Ny, K1, K2, Px, Py have integer type. Nx, Ny, K1, K2, Px, Py > 0, 1 <= Nx * Ny <= 10^7.\n";
+}
+
+void create_types(const Com_struct& com, std::vector<std::vector<MPI_Datatype>> &types) {
+	const int num_of_neib_proc = static_cast<int>(com.neighbours.size());
+	for (int p = 0; p < num_of_neib_proc; ++p) {
+		int message_size = com.send_offset[p + 1] - com.send_offset[p];
+		MPI_Type_indexed(message_size, std::vector<int>(message_size, 1).data(),
+		                 com.send.data() + com.send_offset[p], MPI_DOUBLE, &types[p][0]);
+
+		message_size = com.recv_offset[p + 1] - com.recv_offset[p];
+		MPI_Type_indexed(message_size, std::vector<int>(message_size, 1).data(),
+		                 com.recv.data() + com.recv_offset[p], MPI_DOUBLE, &types[p][1]);
+		MPI_Type_commit(&types[p][0]);
+		MPI_Type_commit(&types[p][1]);
+	}
 }
 
 int main(int argc, char* argv[]) {
 	int Nx, Ny, K1, K2, Px, Py;
-	if (argc == 2 or argc == 3) {
+	if (argc == 2) {
 		std::ifstream in_file(argv[1]);
 		if (not in_file.good()) {
 			printHelp();
@@ -423,7 +394,7 @@ int main(int argc, char* argv[]) {
 			printHelp();
 			return 1;
 		}
-	} else if (argc == 7 or argc == 8) {
+	} else if (argc == 7) {
 		try {
 			Nx = std::stoi(argv[1]);
 			Ny = std::stoi(argv[2]);
@@ -452,138 +423,64 @@ int main(int argc, char* argv[]) {
 		printHelp();
 		return 1;
 	}
-	// bool debug_flag = false;
-	// if (argc == 3 or argc == 6) {
-	// 	debug_flag = true;
-	// }
 
 	MPI_Init(&argc, &argv);
 	int rank, size;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &size);
-
-/*
-	if (rank == 0) {
-		std::cout << MPI_SUCCESS << ' ' <<
-		MPI_ERR_BUFFER << ' ' <<
-		MPI_ERR_COUNT << ' ' <<
-		MPI_ERR_TYPE << ' ' <<
-		MPI_ERR_TAG << ' ' <<
-		MPI_ERR_COMM << ' ' <<
-		MPI_ERR_RANK << ' ' <<
-		MPI_ERR_REQUEST << ' ' <<
-		MPI_ERR_ROOT << ' ' <<
-		MPI_ERR_GROUP << ' ' <<
-		MPI_ERR_OP << ' ' <<
-		MPI_ERR_TOPOLOGY << ' ' <<
-		MPI_ERR_DIMS << ' ' <<
-		MPI_ERR_ARG << ' ' <<
-		MPI_ERR_UNKNOWN << ' ' <<
-		MPI_ERR_TRUNCATE << ' ' <<
-		MPI_ERR_OTHER << ' ' <<
-		MPI_ERR_INTERN << ' ' <<
-		MPI_ERR_IN_STATUS << ' ' <<
-		MPI_ERR_PENDING << ' ' <<
-		MPI_ERR_KEYVAL << ' ' <<
-		MPI_ERR_NO_MEM << ' ' <<
-		MPI_ERR_BASE << ' ' <<
-		MPI_ERR_INFO_KEY << ' ' <<
-		MPI_ERR_INFO_VALUE << ' ' <<
-		MPI_ERR_INFO_NOKEY << ' ' <<
-		MPI_ERR_SPAWN << ' ' <<
-		MPI_ERR_PORT << ' ' <<
-		MPI_ERR_SERVICE << ' ' <<
-		MPI_ERR_NAME << ' ' <<
-		MPI_ERR_WIN << ' ' <<
-		MPI_ERR_SIZE << ' ' <<
-		MPI_ERR_DISP << ' ' <<
-		MPI_ERR_INFO << ' ' <<
-		MPI_ERR_LOCKTYPE << ' ' <<
-		MPI_ERR_ASSERT << ' ' <<
-		MPI_ERR_RMA_CONFLICT << ' ' <<
-		MPI_ERR_RMA_SYNC << '\n';
-	}
-*/
-
+	double stage_time;
 // 0
 	int N, N_own;
 	std::vector<int> row_ptr, col_ptr, Part, L2G, G2L;
+	stage_time = -MPI_Wtime();
 	generate(Nx, Ny, K1, K2, Px, Py, rank, size,
 	        N, N_own, row_ptr, col_ptr, Part, L2G, G2L);
+	stage_time += MPI_Wtime();
+	if (rank == 0) {
+		MPI_Reduce(MPI_IN_PLACE, &stage_time, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+		std::cout << "Gen(mpi). Time - " << stage_time << '\n';
+	} else {
+		MPI_Reduce(&stage_time, nullptr, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+	}
 
 // 1
 	std::vector<double> A_arr(col_ptr.size()), b_vec(N);
+	stage_time = -MPI_Wtime();
 	fill(N, N_own, row_ptr, col_ptr,
 	     L2G, A_arr, b_vec);
+	stage_time += MPI_Wtime();
+	if (rank == 0) {
+		MPI_Reduce(MPI_IN_PLACE, &stage_time, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+		std::cout << "Fill(mpi). Time - " << stage_time << '\n';
+	} else {
+		MPI_Reduce(&stage_time, nullptr, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+	}
 
-// // 2
+// 2
 	Com_struct com;
 	Com(rank, size, N, N_own,
 	    row_ptr, col_ptr,
 	    Part, L2G, G2L,
 	    com);
 
+
 // 3
 	std::vector<double> x_vec(N, 0);
+	std::vector<std::vector<MPI_Datatype>> types(com.neighbours.size(), std::vector<MPI_Datatype>(2));
+	create_types(com, types);
+	stage_time = -MPI_Wtime();
 	Solve(N, N_own, rank, A_arr,  b_vec,
-	      row_ptr, col_ptr, com, x_vec);
-
-/*
-	const size_t sz_row_ptr = (Nx + 1) * (Ny + 1) + 1;
-	const size_t sz_col_ptr =
-	    2 * (Nx * (Ny + 1) + Ny * (Nx + 1) +                                    // horizontal, vertical
-	    (Nx * Ny) / (K1 + K2) * K2 + std::max((Nx * Ny) % (K1 + K2) - K1, 0)) + // oblique
-        (Nx + 1) * (Ny + 1);                                                    // with itself
-    double time = -MPI_Wtime();
-	std::vector<int> row_ptr(sz_row_ptr);
-	std::vector<int> col_ptr(sz_col_ptr);
-	generate(Nx, Ny, K1, K2, row_ptr, col_ptr);
-	time += MPI_Wtime();
-	std::cout << "Generation (sequential) completed. Time - " << time << '\n';
-	if (debug_flag) {
-		std::ofstream oFile ("seq_IA_JA.txt");
-		for (int i = 0; i < static_cast<int>(row_ptr.size() - 1); ++i) {
-			oFile << i << " - ";
-			for (int j = row_ptr[i]; j < row_ptr[i + 1]; ++j) {
-				oFile << col_ptr[j] << ' ';
-			}
-			oFile << '\n';
-		}
-	}
-	
-	time = -MPI_Wtime();
-	std::vector<double> A_arr(sz_col_ptr);
-	std::vector<double> b_vec(sz_row_ptr - 1);
-	fill(Nx, Ny, row_ptr, col_ptr, A_arr, b_vec);
-	time += MPI_Wtime();
-	std::cout << "Filling (sequential) completed. Time - " << time << '\n';
-	if (debug_flag) {
-		std::ofstream oFile ("seq_A_b.txt");
-		for (int i = 0; i < static_cast<int>(row_ptr.size() - 1); ++i) {
-			oFile << i << " - ";
-			for (int j = row_ptr[i]; j < row_ptr[i + 1]; ++j) {
-				oFile << A_arr[j] << ' ';
-			}
-			oFile << " | " << b_vec[i];
-			oFile << '\n';
-		}
+	      row_ptr, col_ptr, com, types,
+	      x_vec);
+	stage_time += MPI_Wtime();
+	if (rank == 0) {
+		MPI_Reduce(MPI_IN_PLACE, &stage_time, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+		std::cout << "Solve(mpi). Time - " << stage_time << '\n';
+	} else {
+		MPI_Reduce(&stage_time, nullptr, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
 	}
 
-	time = -MPI_Wtime();
-	std::vector<double> x_vec(b_vec.size(), 0);
-	Solve(A_arr, b_vec, row_ptr, col_ptr, x_vec);
-	time += MPI_Wtime();
-	std::cout << "Solve (sequential) completed. Time - " << time << '\n';
-	if (debug_flag) {
-		std::ofstream oFile ("seq_X.txt");
-		for (int i = 0; i < static_cast<int>(x_vec.size()); ++i) {
-			oFile << x_vec[i] << ' ';
-		}
-		oFile << '\n';
-	}
-*/
 	MPI_Finalize();
 	return 0;
 }
 
-// g++ -Wall -Wextra -pedantic -std=c++1z -O3 -g -fopenmp -o seq_main seq_main.cpp 
