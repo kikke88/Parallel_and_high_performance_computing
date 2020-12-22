@@ -246,7 +246,7 @@ int main(int argc, char* argv[]) {
 	    (Nx * Ny) / (K1 + K2) * K2 + std::max((Nx * Ny) % (K1 + K2) - K1, 0)) + // oblique
         (Nx + 1) * (Ny + 1);                                                    // with itself
     const size_t S = sz_row_ptr - 1;
-    std::cout << 3 * S - 1 << ' ' << 3 * S << ' ' << sz_col_ptr + sz_col_ptr - S << '\n';
+    std::cout << 62 * S << ' ' << 87 * S << ' ' << 40 * sz_col_ptr<< '\n';
     return 0;
     double time = -omp_get_wtime();
 	std::vector<int> row_ptr(sz_row_ptr);
